@@ -1,0 +1,887 @@
+---
+title: "Are You at Risk of Getting Bike Robbed?"
+author: "Kelsie Fung & Celine Chiu"
+output: prettydoc::html_pretty
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, include=TRUE, eval=TRUE, warning=FALSE, message=FALSE)
+
+required_packages <- c(
+  "lubridate", 
+  "sf", 
+  "tidyverse",
+  "leaflet",
+  "RColorBrewer", 
+  "dplyr", 
+  "ggplot2",
+  "htmlwidgets",
+  "plotly",
+  "rmapshaper", "prettydoc"
+  # include any packages to be installed here
+) 
+for (p in required_packages) { # install if missing
+  if (!require(p, character.only = TRUE)) {
+    install.packages(p, character.only = TRUE)
+  }
+}
+library(tidyverse)
+library("ggplot2")
+library(dplyr)
+library(sf)
+library(RColorBrewer)
+library(htmlwidgets)
+library(plotly)
+library(rmapshaper)
+library(prettydoc)
+
+
+# CSV File
+bike_thefts_csv <- read_csv("data/Bicycle_Thefts_Open_Data.csv") |>
+  mutate(
+    occurence_date = as_date(
+      OCC_DATE, format = "%a, %d %b %Y %H:%M:%S GMT"
+    ),
+    report_date = as_date(
+      REPORT_DATE, format = "%a, %d %b %Y %H:%M:%S GMT"
+    )
+  )
+
+# Create GeoSpatial Objects
+# GeoJSON File
+# use if combining an external geospatial dataset
+bike_thefts_sf <- read_sf("data/Bicycle_Thefts_Open_Data.geojson") |>
+  mutate(
+    occurence_date = as_date(
+      OCC_DATE, format = "%a, %d %b %Y %H:%M:%S GMT"
+    ),
+    report_date = as_date(
+      REPORT_DATE, format = "%a, %d %b %Y %H:%M:%S GMT"
+    )
+  )
+# load shapefile
+toronto_shape <- read_sf("data/Neighbourhoods - 4326.shp")
+
+```
+
+
+The goal of our article is to inform the Toronto Cycle Association of the most popular times and places of bicycle thefts. We will explore the most popular years, months, days, and hours when thefts occur and where the thefts occur the most. This information will inform readers of where and when to take most caution when parking their bikes. 
+
+While Toronto is known for its bustling downtown core and vibrant neighbourhoods, its cycling community has become increasingly exposed to a sense of vulnerability. With bike thefts hitting high numbers, Toronto cyclists are questioning the safety of their bikes and the city’s commitment to protecting them. But with few answers from the city, bike riders are left to wonder: How safe are we on the streets of Toronto?
+
+
+```{r choosing selected columns, echo=FALSE}
+bike_thefts <- bike_thefts_csv %>% dplyr::select(OBJECTID, PRIMARY_OFFENCE, OCC_YEAR, OCC_MONTH, OCC_DOW, OCC_DAY, OCC_DOY, OCC_HOUR,BIKE_MAKE, BIKE_MODEL, BIKE_TYPE, BIKE_COLOUR, BIKE_COST, STATUS, NEIGHBOURHOOD_158)
+
+```
+
+```{r Data Cleaning and Creating Data Variables for Charts}
+bike_type_full_names <- c(
+  "BM" = "BMX",
+  "EL" = "Electric",
+  "FO" = "Folding",
+  "MT" = "Mountain",
+  "RC" = "Racer",
+  "RE" = "Recumbent",
+  "RG" = "Regular",
+  "SC" = "Scooter",
+  "TA" = "Tandem",
+  "TO" = "Touring",
+  "TR" = "Tricycle",
+  "UN" = "Unicycle",
+  "OT" = "Other")
+
+# Define Toronto's geographic bounding box
+lat_min <- 43.581
+lat_max <- 43.85546
+lon_min <- -79.63926
+lon_max <- -79.11527
+
+# Filter data within the bounding box
+filtered_thefts_sf<- bike_thefts_sf %>%
+  filter(LAT_WGS84 >= lat_min & LAT_WGS84 <= lat_max &
+         LONG_WGS84 >= lon_min & LONG_WGS84 <= lon_max)
+
+# Filter the data to include only observations from 2014 to 2024
+filtered_thefts_sf <- filtered_thefts_sf %>%
+  filter(OCC_YEAR >= 2014 & OCC_YEAR <= 2024)
+
+filtered_thefts_sf <- filtered_thefts_sf %>%
+  mutate(BIKE_TYPE = paste(recode(BIKE_TYPE, !!!bike_type_full_names),
+                           " (", BIKE_TYPE, ")", sep = ""))
+
+# Counts number of occurrences of each LOCATION_TYPE for each OCC_YEAR
+location_type_counts <- filtered_thefts_sf %>%
+  group_by(LOCATION_TYPE, OCC_YEAR) %>%
+  summarise(count = n(), .groups = "drop")
+
+# aggregate theft data by neighborhood and year
+thefts_by_neigh_year <- filtered_thefts_sf %>%
+  group_by(NEIGHBOURHOOD_158, OCC_YEAR) %>%
+  summarise(total_thefts = n(), .groups = "drop")
+
+```
+
+
+
+
+## Rising and Falling Trends: Thefts Over the Past Decade
+
+Over the past ten years, bicycle thefts have fluctuated dramatically. From 2014 to 2019, thefts increased drastically, reaching almost 4,000 thefts in 2019—a 30% increase from 2014! This highlights that bicycle thefts are not an isolated problem; they are a broader issue across the whole city of Toronto. 
+
+
+
+```{r thefts over the years, echo=FALSE, fig.width=7, fig.height=5, fig.align='center'}
+# total thefts per year 
+thefts_yearly <- bike_thefts %>%
+  filter(OCC_YEAR >= 2014 & OCC_YEAR <= 2024) %>% 
+  group_by(OCC_YEAR) %>%
+  summarize(yearly_theft_count = n(), .groups = 'drop') %>% 
+  mutate(
+    diff = yearly_theft_count - lag(yearly_theft_count),  # Difference from previous year
+    pct_change = (diff / lag(yearly_theft_count)) * 100,
+    direction = ifelse(diff > 0, "Increase", "Decrease")  # Direction of change
+  )
+
+thefts_yearly_p <- ggplot(thefts_yearly, 
+aes(x = OCC_YEAR, y = yearly_theft_count, text = paste("Year:", OCC_YEAR, 
+                                                       "\nNumber of Thefts: ", yearly_theft_count,
+                                                       "\nChange From Previous Year: ",
+                                                       ifelse(is.na(pct_change), "NA",
+                                                              paste0(round(pct_change, 2), "%"))))) +
+  geom_bar(stat = "identity", fill="lightblue", alpha=0.7) +
+  geom_segment(aes( x = OCC_YEAR - 0.5, 
+                    y = lag(yearly_theft_count), 
+                    xend = OCC_YEAR + 0.5, 
+                    yend = yearly_theft_count, 
+                    color = direction),
+               linewidth = 1, na.rm = TRUE) +
+  geom_text(aes(x = OCC_YEAR, 
+                y = yearly_theft_count + 0.02 * max(yearly_theft_count), 
+                label = ifelse(is.na(pct_change), "", 
+                               paste0(ifelse(pct_change > 0, "+", ""), round(pct_change, 2), "%"))),
+            color = "black", size = 3) +
+  # Customize colors
+  scale_color_manual(values = c("Increase" = "lightgreen", "Decrease" = "#FFCCCB")) +
+  # Labels and styling
+  labs(title = "The Rise and Fall of Bicycle Thefts in Toronto",
+       subtitle = "Tracking Annual Trends: A Decade of Bicycle Theft Patterns",
+       x = "Year",
+       y = "Number of Thefts",
+       color = "Trend") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_continuous(breaks = seq(2014, 2024, by = 1)) 
+
+
+interactive_thefts_yearly_p <- ggplotly(thefts_yearly_p, tooltip = "text")  %>%
+ layout(
+   title = list(
+      text = 
+      "The Rise and Fall of Bicycle Thefts in Toronto
+      <sup>Tracking Annual Trends: A Decade of Bicycle Theft Patterns</sup>", # add title and subtitle
+      x = 0.5,  # Center align the title and subtitle
+      xanchor = "center",
+      yanchor = "top"),
+    margin = list(l = 50, r = 50, b = 70, t =70), # adding data source caption
+    annotations = list(list(x = 1.15, y = -0.15, 
+                            text = "Source: Toronto Police Service", 
+                            xref = 'paper', yref = 'paper', showarrow = FALSE,
+        xanchor = 'right', yanchor = 'auto', xshift = 0, yshift = 0,
+        font = list(size = 10))))
+
+interactive_thefts_yearly_p
+```
+However, in 2020, numbers fell significantly. From 2020 to 2023 there were 936 fewer reported thefts. With the onset of the COVID-19 pandemic, urban life was completely altered. Factors like more people working from home and fewer commuters travelling to work or school shifted bicycle theft patterns. Less public activity, due to the pandemic, provided limited opportunities for bicycle thefts to occur in public spaces.
+
+Although the overall total number of bicycle thefts decreased during COVID-19, the number of bicycle thefts pertaining to thefts that happen in indoor environments increased during this time period.
+
+
+## Seasons at Risk: The Peak Months of Theft
+Summers in Toronto are known to be hot, vibrant, and packed with activities, making it one of the best times to explore the city. From outdoor festivals and night markets to scenic bike trails across the waterfront, there is something for everyone to enjoy. However, it is also the riskiest season for cyclists, as bike thefts peak between May and September. 
+
+```{r monthly thefts for year and price range, echo=FALSE, fig.width=8, fig.height=6, fig.align='center'}
+
+############################ PREPARING DATA ############################
+# count thefts per year, by month
+monthly_yearly_thefts <- bike_thefts %>%
+  filter(OCC_YEAR >= 2014 & OCC_YEAR <= 2024) %>%
+  group_by(OCC_MONTH, OCC_YEAR) %>%
+  summarize(theft_count = n(), .groups = 'drop')
+
+
+
+
+# Ensure months are in order
+monthly_yearly_thefts$OCC_MONTH <- factor(monthly_yearly_thefts$OCC_MONTH,
+                                          levels = c("January", "February", "March", "April",
+                                                     "May",
+                                                     "June", "July", "August", "September",
+                                                     "October",
+                                                     "November", "December"))
+
+
+
+
+# Converts OCC_MONTH into a factor variable for grouping
+bike_thefts$OCC_MONTH <- factor(bike_thefts$OCC_MONTH, levels = month.name)
+
+######################### CALCULATING THEFTS PER MONTH #############################
+# Calculate total thefts per month
+monthly_totals <- monthly_yearly_thefts %>%
+  group_by(OCC_MONTH) %>%
+  summarize(total_thefts = sum(theft_count))
+
+
+
+# Merge monthly_totals with monthly_yearly_thefts to retain OCC_YEAR for geom_text
+monthly_yearly_thefts <- left_join(monthly_yearly_thefts, monthly_totals, by = "OCC_MONTH")
+
+
+
+
+############################ PLOTTING GRAPHS ############################
+col_grid <- rgb(235, 235, 235, 100, maxColorValue = 255)
+
+# Bike Thefts Per Year, By Month
+p1 <- ggplot(monthly_yearly_thefts,
+             aes(x = OCC_MONTH, y = theft_count, fill = as.factor(OCC_YEAR), text = paste("Year:", OCC_YEAR,
+                                               "\nNumber of Thefts:", theft_count))) +
+  geom_bar(stat = "identity")  +
+  geom_text(aes(x = OCC_MONTH, y = total_thefts, label = total_thefts),
+            vjust = 0.5, size = 3) + # Adjust vjust for position
+  labs(title="Seasons of Theft: Uncovering Toronto's Monthly Bicycle Theft Trends",
+       subtitle = "Exploring Why Summer is a Cyclist's Riskiest Season",
+       x = "Month",
+       y = "Number of Thefts",
+       fill = "Year") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Bike Thefts Per Bike Type, By Month
+bike_type_palette <- c("green4", "#6A3D9A", "#FF7F00",
+                       "gold1", "skyblue2", "#FB9A99", "palegreen2", "#CAB2D6",
+                       "khaki2", "darkturquoise", "hotpink", "dodgerblue2", "#E31A1C")
+
+
+
+
+
+
+
+############ CONVERTING TO INTERACTIVE GRAPHS ####################
+# Convert both ggplot objects to plotly objects
+thefts_monthly_yearly_p1 <- ggplotly(p1, tooltip = "text") %>%
+ layout(
+   title = list(
+      text =
+      "Uncovering Toronto's Monthly Bicycle Theft Trends
+      <sup>Exploring Why Summer is a Cyclist's Riskiest Season</sup>", # add title and subtitle
+      x = 0.5,  # Center align the title and subtitle
+      xanchor = "center",
+      yanchor = "top"),
+    margin = list(l = 50, r = 50, b = 70, t = 70),
+    annotations = list(list(x = 1.1, y = -0.185,
+                            text = "Source: Toronto Police Service", # adding data source caption
+                            xref = 'paper', yref = 'paper', showarrow = FALSE,
+        xanchor = 'right', yanchor = 'auto', xshift = 0, yshift = 0,
+        font = list(size = 10))))
+
+
+
+thefts_monthly_yearly_p1
+
+```
+Over the past decade, the number of thefts during the peak months has remained consistent each year, meaning your bike is at risk each and every summer.
+
+The spike in thefts begins in May as warmer weather encourages more people to cycle, whether for commuting, exercise or recreation purposes. The numbers increased dramatically in June, reaching a peak of almost 6,000 thefts over the past decade! If cyclists choose to take advantage of the warm weather, they must take extra precautions when doing so. 
+
+
+
+## What Time of Day Has the Most Thefts? A Day and Hour Breakdown
+
+No matter the weather, cyclists are always on the streets of Toronto. Although bike thefts are most common in the summer, they remain a significant issue all year round. Looking further into each week of bike thefts, there are some days and hours when bike thefts occur the most. 
+
+```{r Heatmap By Day and Hour, fig.align="center", fig.width=7, fig.height=5}
+
+# Create a heatmap by hour and day of week
+theft_heatmap <- bike_thefts %>%
+  count(OCC_DOW, OCC_HOUR) %>%
+  arrange(OCC_DOW, OCC_HOUR) 
+
+theft_heatmap$TIME <-  theft_heatmap %>%  mutate(OCC_HOUR = sprintf("%02d:00", OCC_HOUR))
+
+theft_heatmap$OCC_DOW <- factor(theft_heatmap$OCC_DOW, 
+                                          levels = c("Saturday", "Friday", "Thursday", "Wednesday", "Tuesday", "Monday", "Sunday"))
+
+p4 <- ggplot(theft_heatmap, aes(x=OCC_HOUR, y=OCC_DOW, fill=n, text = paste("Day: ", OCC_DOW,
+                                               "\nHour of the Day: ", TIME$OCC_HOUR, 
+                                               "\nNumber of Thefts: ", n))) +
+  geom_tile() +
+  scale_fill_gradient(low="lightblue", high="darkblue") +
+  theme_minimal() +
+  labs(title="Clocking the Crimes: Bicycle Thefts by Day and Hour",subtitle = "Spotting Vulnerable Hours of the Day",
+       x="Hour of the Day",
+       y="Day of the Week",
+       fill="Number of Thefts", 
+       caption = "Data Source: Toronto Police Service") 
+
+thefts_day_hour_p4 <- ggplotly(p4, tooltip = "text") %>%
+ layout(
+   title = list(
+      text = 
+      "Clocking the Crimes: Bicycle Thefts by Day and Hour
+      <sup>Spotting Vulnerable Hours of the Day</sup>", # add title and subtitle
+      x = 0.5,  # Center align the title and subtitle
+      xanchor = "center",
+      yanchor = "top"),
+    margin = list(l = 50, r = 50, b = 70, t =70), # adding data source caption
+    annotations = list(list(x = 1.25, y = -0.13, 
+                            text = "Source: Toronto Police Service", 
+                            xref = 'paper', yref = 'paper', showarrow = FALSE,
+        xanchor = 'right', yanchor = 'auto', xshift = 0, yshift = 0,
+        font = list(size = 10))))
+
+thefts_day_hour_p4 
+```
+Biking home from work? If this sounds like you, take precautions. The number of thefts tends to peak around rush hour (5 pm to 6 pm), especially. Totalling the past decade, the highest number of thefts on a given day and hour is Wednesdays at 6 pm, with 440 incidents recorded.
+
+Biking around the city for lunch? Bicycle thefts have a small peak around noon every single day, with increases on the weekend.
+
+Regardless of the time of day, bike thefts in Toronto remain a consistent concern, with higher risks during peak hours such as rush hour and lunchtime, making it crucial for cyclists to stay alert and take precautions daily.
+
+
+## Is Your Area “Hot” for Bike Thefts? 
+
+Not only are certain times more at risk but so may be the region you are in! Over the years the concentration of bike thefts has been consistently around the heart of Toronto, as well as surrounding universities like York University and University of Toronto. The further away from the center of the city you are, the fewer thefts there usually are.
+
+
+```{r Creating Choropleth Map, error=FALSE, fig.align='center'}
+
+#Merge the aggregated theft data with the Toronto shape data
+toronto_shape_aggregated <- toronto_shape %>%
+  st_join(thefts_by_neigh_year, join = st_intersects)
+
+toronto_shape_aggregated <- toronto_shape_aggregated %>%
+  select(AREA_DE8, geometry, NEIGHBOURHOOD_158, OCC_YEAR, total_thefts)
+
+install.packages("rmapshaper")
+library(rmapshaper)
+
+# Simplifying the map data so it renders (since so many layers)
+toronto_shape_aggregated <- ms_simplify(toronto_shape_aggregated, keep = 0.04)
+
+# Setting up variables for map
+combined_years_total_thefts <- toronto_shape_aggregated %>%
+  group_by(NEIGHBOURHOOD_158) %>%
+      summarise(total_thefts_combined = sum(total_thefts), .groups = "drop")
+unique_years <- unique(toronto_shape_aggregated$OCC_YEAR)  # Get unique years
+color_palette <- colorQuantile("YlOrRd", toronto_shape_aggregated$total_thefts, n = 5)
+
+choropleth_map <- leaflet(toronto_shape_aggregated, options = leafletOptions(minZoom = 10, maxZoom = 14)) %>%
+  addControl(
+    html = "<div style='text-align: center; font-size: 18px; font-weight: bold;'>
+              Bike Thefts Across Toronto Neighbourhoods Over the Years
+            </div>
+            <div style='position: relative; text-align: center; font-size: 14px;'>
+              Visualizing Total Bike Theft Incidents in Toronto Neighbourhoods from 2014 to 2024
+            </div>",
+    position = "topright"
+  ) %>%
+  addControl(
+    html = "<div style='font-size: 12px; text-align: right;'>
+              Data Source: Toronto Police Open Data Portal
+            </div>",
+    position = "bottomleft"
+  ) %>%
+  addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
+
+  setMaxBounds(
+    lng1 = -79.6393, lat1 = 43.4810,  # Southwest corner of the bounding box
+    lng2 = -79.1152, lat2 = 43.8555   # Northeast corner of the bounding box
+  ) %>%
+
+  # Add polygons for zero-theft regions (base layer)
+  addPolygons(
+    data = toronto_shape,
+    fillColor = "lightgrey",  # Light color for zero thefts
+    weight = 1,
+    color = "black",
+    fillOpacity = 0.3,
+    label = ~paste("Neighborhood:", AREA_DE8, "Total Thefts: 0"),
+    labelOptions = labelOptions(
+      style = list(
+        "font-size" = "15px",  # Increase font size here
+        "font-weight" = "bold",
+        "color" = "black"      # Optional: change text color
+      )
+    ),
+    group = "Zero Thefts" # Name the layer
+  ) %>%
+  # Loop through each year and add polygons for that year
+  {
+    for (year in c(2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024)) {
+      . <- addPolygons(
+        .,
+        data = toronto_shape_aggregated %>% filter(OCC_YEAR == year),
+        fillColor = ~color_palette(total_thefts),
+        weight = 1,
+        color = "black",
+        fillOpacity = 0.7,
+        label = ~paste("Neighborhood:", AREA_DE8, "Total Thefts:", total_thefts),
+        labelOptions = labelOptions(
+          style = list(
+            "font-size" = "15px",  # Increase font size here
+            "color" = "black"      # Optional: change text color
+          )
+        ),
+        group = as.character(year)  # Group polygons by year
+      )
+    }
+    .
+  } %>%
+
+  # Add a layer for combined data (All Years)
+  addPolygons(
+    data = combined_years_total_thefts,
+    fillColor = ~ifelse(total_thefts_combined > (max(toronto_shape_aggregated$total_thefts)), "black", color_palette(total_thefts_combined)),
+    weight = 1,
+    color = "black",
+    fillOpacity = 0.7,
+    label = ~paste("Neighborhood:", NEIGHBOURHOOD_158, "Total Thefts:", total_thefts_combined),
+    labelOptions = labelOptions(
+      style = list(
+        "font-size" = "15px",  # Increase font size here
+        "color" = "black"      # Optional: change text color
+      )
+    ),
+    group = "All Years"
+  ) %>%
+
+  # Add Layers Control to toggle between different years and combined data
+  addLayersControl(
+    baseGroups = c(unique_years, "All Years"), # Dynamically add all year layers and combined layer
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  #
+  addLegend(
+    "bottomright",
+    pal = color_palette,
+    values = toronto_shape_aggregated$total_thefts,  # Ensure legend covers all theft values
+    title = "Total Bike Thefts",
+    opacity = 1
+  )
+
+# display the choropleth map
+choropleth_map
+
+```
+Neighbourhoods with Consistently Higher Theft Levels:  
+- Annex  
+- University  
+- Church-Wellesley  
+- Junction Wallace Emerson  
+- St. Lawrence-East Bayfront - The Islands  
+- Downtown Yonge East  
+
+
+
+
+
+
+```{r,  error=FALSE, fig.width=12, fig.height=6, fig.align='center'}
+# Count the number of occurrences of each NEIGHBOURHOOD_158 for each OCC_YEAR
+neighbourhood_counts <- filtered_thefts_sf %>%
+  group_by(NEIGHBOURHOOD_158, OCC_YEAR) %>%
+  summarise(count = n(), .groups = "drop")
+
+large_neighbourhoods <- c(
+  "Yonge-Bay Corridor (170)",
+  "Downtown Yonge East (168)",
+  "Wellington Place (164)",
+  "St Lawrence-East Bayfront-The Islands ",
+  "University (79)",
+  "Moss Park (73)",
+  "Kensington-Chinatown (78)",
+  "Church-Wellesley (167)",
+  "Bay-Cloverhill (169)",
+  "South Riverdale (70)",
+  "Annex (95)"
+)
+
+
+# Filter the data for large and small neighborhood groups
+large_neigh_data <- neighbourhood_counts %>%
+  filter(NEIGHBOURHOOD_158 %in% large_neighbourhoods) %>% 
+    arrange(NEIGHBOURHOOD_158, OCC_YEAR) %>%
+  group_by(NEIGHBOURHOOD_158) %>%
+  mutate(
+    # Calculate year-over-year percentage change and round to two decimal places
+    year_to_year_large_neigh_change = round((count - lag(count, default = first(count))) / lag(count, default = first(count)) * 100, 2)
+  ) %>%
+  ungroup()
+
+# Create the large trend graph
+large_trend_neigh_graph <- ggplot(large_neigh_data, aes(
+  x = OCC_YEAR,
+  y = count,
+  color = NEIGHBOURHOOD_158,
+  group = NEIGHBOURHOOD_158
+)) +
+  geom_point(aes(text = paste("Neighbourhood:", NEIGHBOURHOOD_158, "<br>Year:", OCC_YEAR, "<br>Count:", count, "<br>Percent Change from Previous Year:", round(year_to_year_large_neigh_change, 2), "%")), size = 3) +
+  geom_line(aes(text = paste("Neighbourhood:", NEIGHBOURHOOD_158, "<br>Year:", OCC_YEAR, "<br>Count:", count))) +
+  labs(
+    title = "Bike Thefts Trends in Neighbourhoods With Higher Theft Levels Over the Years",
+    x = "Year",
+    y = "Number of Thefts",
+    color = "Neighbourhood"
+  ) +
+  scale_x_continuous(
+    breaks = seq(min(large_neigh_data$OCC_YEAR), max(large_neigh_data$OCC_YEAR), by = 1)
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 12)
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, max(large_neigh_data$count), by = 100)
+  )
+
+# Convert to interactive plotly graph
+interactive_large_trend_neigh_graph <- ggplotly(large_trend_neigh_graph, tooltip = "text") %>%
+  layout(
+    hovermode = "closest", # Only hover closest point
+    showlegend = TRUE
+  ) %>%
+  onRender("
+    function(el, x) {
+      var allTraces = x.data;
+      var selectedTrace = null;
+
+      // Helper function to dull all other lines
+      function updateHighlight(targetLocation) {
+        allTraces.forEach((trace, i) => {
+          if (trace.name === targetLocation) {
+            Plotly.restyle(el.id, { opacity: 1 }, [i]);
+          } else {
+            Plotly.restyle(el.id, { opacity: 0.2 }, [i]);
+          }
+        });
+      }
+
+      // Reset to full opacity
+      function resetHighlight() {
+        allTraces.forEach((trace, i) => {
+          Plotly.restyle(el.id, { opacity: 1 }, [i]);
+        });
+        selectedTrace = null;
+      }
+
+      el.on('plotly_click', function(data) {
+        const clickedLocation = data.points[0].data.name;
+
+        if (selectedTrace === clickedLocation) {
+          resetHighlight(); // Reset if the same line is clicked again
+        } else {
+          selectedTrace = clickedLocation;
+          updateHighlight(clickedLocation);
+        }
+      });
+
+      el.on('plotly_hover', function(data) {
+        if (!selectedTrace) { // Only show tooltips if no line is selected
+          const hoverLocation = data.points[0].data.name;
+          updateHighlight(hoverLocation);
+        }
+      });
+
+      el.on('plotly_unhover', function() {
+        if (!selectedTrace) { // Reset if no line is selected
+          resetHighlight();
+        }
+      });
+    }
+  ")
+
+# Display the interactive graph
+interactive_large_trend_neigh_graph
+```
+
+What you might find surprising though, is that the neighbourhoods that consistently have higher numbers of thefts each year dropped during 2020 when COVID-19 first hit, while the neighbourhoods that have fewer thefts peaked. Cities like Avondale rose by 216% from 2019 to 2020! Eglinton East, Oakdale Beverly Hills, and Yonge Eglinton also increased. 
+
+Don’t let this fool you though, many neighbourhoods with consistently higher thefts were still relatively higher than the lower neighbourhoods, with the distribution of total thefts just spread more across the city. The thefts in these hotspot neighbourhoods have been back to increasing again from 2020 to 2023 and they remain the most risky places to get your bikes stolen! 
+
+Something to note is that since it is still 2024, not all thefts have been reported by the Toronto Police yet which explains the sudden drop in thefts and missing data for this year.
+
+```{r Neighbourhood Line Graphs, error=FALSE, fig.width=12, fig.height=6, fig.align='center'}
+
+# # Count the number of occurrences of each NEIGHBOURHOOD_158 for each OCC_YEAR
+# neighbourhood_counts <- filtered_thefts_sf %>%
+#   group_by(NEIGHBOURHOOD_158, OCC_YEAR) %>%
+#   summarise(count = n(), .groups = "drop")
+
+
+
+interesting_neigh <- c("Avondale (153)", "Dorset Park (126)", "East L'Amoreaux (148)",
+    "L'Amoreaux West (147)", "Pleasant View (46)",
+    "Oakdale-Beverley Heights (154)", "Eglinton East (138)",
+    "Beechborough-Greenbrook (112)", "Brookhaven-Amesbury (30)",
+    "Ionview (125)", "Steeles (116)", "Yonge-Eglinton (100)",
+    "Agincourt South-Malvern West (128)", "Bayview Woods-Steeles (49)",
+    "Elms-Old Rexdale (5)")
+
+interest_neigh_data <- neighbourhood_counts %>%
+  filter(NEIGHBOURHOOD_158 %in% interesting_neigh) %>% 
+      arrange(NEIGHBOURHOOD_158, OCC_YEAR) %>%
+  group_by(NEIGHBOURHOOD_158) %>%
+  mutate(
+    # Calculate year-over-year percentage change and round to two decimal places
+    year_to_year_interes_neigh_change = round((count - lag(count, default = first(count))) / lag(count, default = first(count)) * 100, 2)
+  ) %>%
+  ungroup()
+
+
+neighborhood_trend_graph <- ggplot(interest_neigh_data, aes(
+  x = OCC_YEAR,
+  y = count,
+  color = NEIGHBOURHOOD_158,
+  group = NEIGHBOURHOOD_158
+)) +
+  geom_point(aes(text = paste("Neighbourhood:", NEIGHBOURHOOD_158, "<br>Year:", OCC_YEAR, "<br>Count:", count, "<br>Percent Change from Previous Year:", round(year_to_year_interes_neigh_change, 2), "%")), size = 3) +
+  geom_line(aes(text = paste("Neighbourhood:", NEIGHBOURHOOD_158, "<br>Year:", OCC_YEAR, "<br>Count:", count))) +
+  labs(
+    title = "Bike Thefts Trends in Interesting Key Neighbourhoods Over the Years",
+    x = "Year",
+    y = "Number of Thefts",
+    color = "Neighbourhood"
+  ) +
+  scale_x_continuous(
+    breaks = seq(min(interest_neigh_data$OCC_YEAR), max(interest_neigh_data$OCC_YEAR), by = 1)
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 12)
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, max(interest_neigh_data$count), by = 5)
+  )
+
+# Convert to an interactive plotly graph
+interactive_neighborhood_trend_graph <- ggplotly(neighborhood_trend_graph, tooltip = "text") %>%
+  layout(
+    hovermode = "closest", # Only hover closest point
+    showlegend = TRUE
+  ) %>%
+  onRender("
+    function(el, x) {
+      var allTraces = x.data;
+      var selectedTrace = null;
+
+      // Helper function to dull all other lines
+      function updateHighlight(targetLocation) {
+        allTraces.forEach((trace, i) => {
+          if (trace.name === targetLocation) {
+            Plotly.restyle(el.id, { opacity: 1 }, [i]);
+          } else {
+            Plotly.restyle(el.id, { opacity: 0.2 }, [i]);
+          }
+        });
+      }
+
+      // Reset to full opacity
+      function resetHighlight() {
+        allTraces.forEach((trace, i) => {
+          Plotly.restyle(el.id, { opacity: 1 }, [i]);
+        });
+        selectedTrace = null;
+      }
+
+      el.on('plotly_click', function(data) {
+        const clickedLocation = data.points[0].data.name;
+
+        if (selectedTrace === clickedLocation) {
+          resetHighlight(); // Reset if the same line is clicked again
+        } else {
+          selectedTrace = clickedLocation;
+          updateHighlight(clickedLocation);
+        }
+      });
+
+      el.on('plotly_hover', function(data) {
+        if (!selectedTrace) { // Only show tooltips if no line is selected
+          const hoverLocation = data.points[0].data.name;
+          updateHighlight(hoverLocation);
+        }
+      });
+
+      el.on('plotly_unhover', function() {
+        if (!selectedTrace) { // Reset if no line is selected
+          resetHighlight();
+        }
+      });
+    }
+  ")
+# Display the interactive graph
+interactive_neighborhood_trend_graph
+
+
+```
+
+```{r Exploring Where Further - Location Line Graphs, error=FALSE, fig.align='center', fig.width=12, fig.height=6}
+
+# Calculate year-over-year change for each LOCATION_TYPE
+location_type_change <- location_type_counts %>%
+  arrange(LOCATION_TYPE, OCC_YEAR) %>%
+  group_by(LOCATION_TYPE) %>%
+  mutate(
+   year_to_year_change = round(((count - lag(count)) / lag(count)) * 100, 2)  # Calculate the difference between each year and the previous year
+  ) %>%
+  ungroup()
+
+# Drastic Trends Noticed
+location_types_to_include <- c(
+  "Apartment (Rooming House, Condo)",
+  "Streets, Roads, Highways (Bicycle Path, Private Road)",
+  "Single Home, House (Attach Garage, Cottage, Mobile)",
+  "Parking Lots (Apt., Commercial Or Non-Commercial)",
+  "Other Commercial / Corporate Places (For Profit, Warehouse, Corp. Bldg",
+  "Private Property Structure (Pool, Shed, Detached Garage)",
+  "Universities / Colleges",
+  "Bar / Restaurant",
+  "Open Areas (Lakes, Parks, Rivers)",
+  "Pharmacy"
+)
+
+large_loc_trend_data <- location_type_counts %>%
+  filter(LOCATION_TYPE %in% location_types_to_include) %>%
+  arrange(OCC_YEAR) %>%
+  # Calculate total thefts per year
+  group_by(OCC_YEAR) %>%
+  mutate(total_incidents_by_year = sum(count)) %>%
+  ungroup() %>%
+  # Re-arrange by LOCATION_TYPE for subsequent operations
+  arrange(LOCATION_TYPE) %>%
+  group_by(LOCATION_TYPE) %>%
+  mutate(
+    yearly_percent_thefts = round((count / total_incidents_by_year) * 100, 2),
+    # Calculate year-to-year percentage change
+    year_to_year_change = round((count - lag(count, default = first(count))) / lag(count, default = first(count)) * 100, 2)
+  ) %>%
+  ungroup()
+
+# Step 2: Create the line graph
+large_trend_line_graph <- ggplot(large_loc_trend_data, aes(
+  x = OCC_YEAR,
+  y = count,
+  color = LOCATION_TYPE,
+  group = LOCATION_TYPE
+)) +
+  geom_point(aes(text = paste("Location Type:", LOCATION_TYPE, "<br>Year:", OCC_YEAR, "<br>Count:", count, "<br>Percent Change from Previous Year:", round(year_to_year_change, 2), "%", "<br> Percentage of Total Thefts of Year:", yearly_percent_thefts)), size = 3) +
+  geom_line(aes(text = paste("Location Type:", LOCATION_TYPE, "<br>Year:", OCC_YEAR, "<br>Count:", count))) +
+  labs(
+    title = "Bike Thefts in Top Location Types Over the Years",
+    x = "Year",
+    y = "Number of Thefts",
+    color = "Location Type"
+  ) +
+  scale_x_continuous(
+    breaks = seq(min(large_loc_trend_data$OCC_YEAR), max(large_loc_trend_data$OCC_YEAR), by = 1)  # Ensure yearly steps
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, max(location_type_counts$count), by = 100)  # Ensure yearly steps
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 12)
+  )
+# Step 3: Convert to interactive plotly graph
+interactive_large_trend_line_graph <- ggplotly(large_trend_line_graph, tooltip = "text")%>%
+  layout(
+    hovermode = "closest", # Only hover closest point
+    showlegend = TRUE
+  ) %>%
+  onRender("
+    function(el, x) {
+      var allTraces = x.data;
+      var selectedTrace = null;
+
+      // Helper function to dull all other lines
+      function updateHighlight(targetLocation) {
+        allTraces.forEach((trace, i) => {
+          if (trace.name === targetLocation) {
+            Plotly.restyle(el.id, { opacity: 1 }, [i]);
+          } else {
+            Plotly.restyle(el.id, { opacity: 0.2 }, [i]);
+          }
+        });
+      }
+
+      // Reset to full opacity
+      function resetHighlight() {
+        allTraces.forEach((trace, i) => {
+          Plotly.restyle(el.id, { opacity: 1 }, [i]);
+        });
+        selectedTrace = null;
+      }
+
+      el.on('plotly_click', function(data) {
+        const clickedLocation = data.points[0].data.name;
+
+        if (selectedTrace === clickedLocation) {
+          resetHighlight(); // Reset if the same line is clicked again
+        } else {
+          selectedTrace = clickedLocation;
+          updateHighlight(clickedLocation);
+        }
+      });
+
+      el.on('plotly_hover', function(data) {
+        if (!selectedTrace) { // Only show tooltips if no line is selected
+          const hoverLocation = data.points[0].data.name;
+          updateHighlight(hoverLocation);
+        }
+      });
+
+      el.on('plotly_unhover', function() {
+        if (!selectedTrace) { // Reset if no line is selected
+          resetHighlight();
+        }
+      });
+    }
+  ")
+
+
+# Step 4: Display the interactive graph
+interactive_large_trend_line_graph
+
+
+
+```
+
+Even within a neighbourhood, there tends to be further trends in the type of location. Apartments have a significantly noticeable increase from 2014 making 14% of total thefts to 36% in 2020, and although the number of thefts significantly decreased in 2023, it still made up 27% of total thefts. Locations like homes, streets, parking lots, and other commercial areas among the most common theft premises types are also beginning to decrease in number but remain around the same percent of total thefts. These types of locations remain popular spots for thefts, with the decrease in numbers due to the corresponding decrease in bike thefts overall per year.
+
+
+## What to Watch Out For As a Biker?
+
+Bike thefts are most common during the summer months. If you plan to spend a summer day in Toronto on your bike, it is essential to take extra precautions when leaving your bike unattended. On a day-to-day basis, if you plan to bike during peak times such as rush hour or lunchtime, it is important to stay attentive. Taking measures such as doubling your locks and [registering your bike](https://www.tps.ca/services/bicycle-registration/register/) with the City of Toronto are some things a cyclist can do to protect their bike and improve security. By consistently taking these steps, cyclists can work together to protect bikes across Toronto.
+
+The top neighbourhoods for bike theft are ones that are structured to contain many of the top bike theft location types as well. If you are in these hot spots for thefts, you should increase awareness about bike theft prevention to help fellow bikers know when and where it is safe to leave their bikes. Within an apartment, home, private property, or parking lot, there should be work done to help everyone get access to better storage of their bikes as many thefts are indoors. For students who bike around their university or others who just love to bike, it is important to raise awareness of the risks they may face based on the time and place they are riding in. 
+
+
+## Working as a Community
+
+Since the number of thefts in the data are only the reported bike thefts, there may be discrepancies between current trends and risks. If everyone works together in the community, and alerts each other of theft hotspots and the time of stolen bikes, then we can create a collective effort in reducing thefts! 
+
+```{r, fig.cap="Source: Unsplash"}
+knitr::include_graphics("data/a2-bike-man.jpg")
+```
+
