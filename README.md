@@ -20,7 +20,7 @@ This project provides an in-depth analysis of bicycle theft trends across Toront
   - **Mapping**
     - sf
     - rmapshaper
-    -  leaflet
+    - leaflet
   - **Documentation**
     - prettydoc 
 
